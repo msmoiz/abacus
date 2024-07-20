@@ -21,6 +21,12 @@ fn main() {
     }
 
     thread::sleep(Duration::from_secs(5));
+
+    metric(
+        "requests",
+        1,
+        HashMap::from([("user".into(), "bob".into())]),
+    );
 }
 
 /// Initializes the global reporter.
@@ -56,7 +62,7 @@ impl Reporter {
     }
 
     /// Records a metric.
-    fn record(&mut self, metric: Metric) {
+    fn record(&self, metric: Metric) {
         println!("record: {metric}");
         self.sender.send(Message::Metric(metric)).unwrap();
     }
@@ -188,6 +194,6 @@ fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
     };
 
     unsafe {
-        REPORTER.get_mut().as_deref_mut().map(|r| r.record(metric));
+        REPORTER.get().map(|r| r.record(metric));
     }
 }
