@@ -1,5 +1,5 @@
 use std::cell::OnceCell;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::sync::mpsc::{channel, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -7,7 +7,7 @@ use std::{collections::HashMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-static mut REPORTER: OnceCell<Reporter> = OnceCell::new();
+static mut REPORTER: OnceCell<Box<dyn Reporter + 'static>> = OnceCell::new();
 
 macro_rules! metric {
     ( $name: expr, $value: expr $(, $dim_key:expr => $dim_value:expr)* ) => {
@@ -20,7 +20,7 @@ macro_rules! metric {
 }
 
 fn main() {
-    let _guard = init_reporter();
+    let _guard = init_reporter(BufReporter::new());
 
     for _ in 0..8 {
         metric!("requests", 1, "user" => "alice");
@@ -38,29 +38,43 @@ fn main() {
     metric!("requests", 1, "user" => "bob", "id" => "12345");
 }
 
+/// Describes the interface for an object that reports metrics.
+trait Reporter: Debug {
+    /// Reports a metric.
+    fn report(&self, metric: Metric);
+
+    /// Closes the reporter.
+    ///
+    /// Does nothing by default.
+    fn close(&mut self) {}
+}
+
 /// Initializes the global reporter.
 ///
 /// Returns a guard that will flush the reporter when dropped.
-fn init_reporter() -> ReporterGuard {
+fn init_reporter<R>(reporter: R) -> ReporterGuard
+where
+    R: Reporter + 'static,
+{
     unsafe {
         REPORTER
-            .set(Reporter::new())
+            .set(Box::new(reporter))
             .expect("reporter should only be set once");
     }
 
     ReporterGuard
 }
 
-/// An interface for reporting metrics.
+/// A reporter that reports metrics with buffering.
 #[derive(Debug)]
-struct Reporter {
+struct BufReporter {
     /// Handle for the reporting thread.
     handle: Option<JoinHandle<()>>,
     /// Interface to send metrics to the reporting thread.
     sender: Sender<Message>,
 }
 
-impl Reporter {
+impl BufReporter {
     /// Creates a new Reporter.
     fn new() -> Self {
         let (handle, sender) = Self::report();
@@ -68,12 +82,6 @@ impl Reporter {
             handle: Some(handle),
             sender,
         }
-    }
-
-    /// Records a metric.
-    fn record(&self, metric: Metric) {
-        println!("record: {metric}");
-        self.sender.send(Message::Metric(metric)).unwrap();
     }
 
     /// Reports metrics in the background.
@@ -93,23 +101,26 @@ impl Reporter {
                 let Ok(message) = receiver.recv() else { break };
 
                 match message {
-                    Message::Metric(metric) => buf.push(metric),
+                    Message::Metric(metric) => {
+                        println!("buffering: {metric}");
+                        buf.push(metric);
+                        const FLUSH_THRESHOLD: usize = 3;
+                        if buf.len() - pos == FLUSH_THRESHOLD {
+                            println!("flushing metrics ({}..{})", pos, buf.len() - 1);
+                            pos = buf.len();
+                        }
+                    }
                     Message::Flush => {
                         println!("flushing metrics ({}..{})", pos, buf.len() - 1);
                         pos = buf.len();
                     }
-                    Message::Close => break,
+                    Message::Close => {
+                        if pos < buf.len() {
+                            println!("flushing metrics ({}..{})", pos, buf.len() - 1);
+                        }
+                        break;
+                    }
                 }
-
-                const FLUSH_THRESHOLD: usize = 3;
-                if buf.len() - pos == FLUSH_THRESHOLD {
-                    println!("flushing metrics ({}..{})", pos, buf.len() - 1);
-                    pos = buf.len();
-                }
-            }
-
-            if pos < buf.len() {
-                println!("flushing metrics ({}..{})", pos, buf.len() - 1);
             }
         });
 
@@ -120,8 +131,13 @@ impl Reporter {
 
         (handle, user_sender)
     }
+}
 
-    /// Closes the reporting thread.
+impl Reporter for BufReporter {
+    fn report(&self, metric: Metric) {
+        self.sender.send(Message::Metric(metric)).unwrap();
+    }
+
     fn close(&mut self) {
         self.sender.send(Message::Close).unwrap();
         self.handle.take().map(|t| t.join());
@@ -203,6 +219,6 @@ fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
     };
 
     unsafe {
-        REPORTER.get().map(|r| r.record(metric));
+        REPORTER.get().map(|r| r.report(metric));
     }
 }
