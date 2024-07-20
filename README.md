@@ -7,7 +7,7 @@ flushes remaining metrics on program end.
 
 ```rust
 fn main() {
-    let _guard = init_reporter();
+    let _guard = set_reporter(SimpleReporter::new());
 
     for _ in 0..8 {
         metric!("requests", 1, "user" => "alice");
