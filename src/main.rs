@@ -9,24 +9,26 @@ use chrono::{DateTime, SecondsFormat, Utc};
 
 static mut REPORTER: OnceCell<Reporter> = OnceCell::new();
 
+macro_rules! metric {
+    ( $name: expr, $value: expr $(, $dim_key:expr => $dim_value:expr)* ) => {
+        let mut dimensions = HashMap::new();
+        $(
+            dimensions.insert($dim_key.into(), $dim_value.into());
+        )*
+        metric($name, $value, dimensions)
+    };
+}
+
 fn main() {
     let _guard = init_reporter();
 
     for _ in 0..8 {
-        metric(
-            "requests",
-            1,
-            HashMap::from([("user".into(), "bob".into())]),
-        );
+        metric!("requests", 1, "user" => "alice");
     }
 
     thread::sleep(Duration::from_secs(5));
 
-    metric(
-        "requests",
-        1,
-        HashMap::from([("user".into(), "bob".into())]),
-    );
+    metric!("requests", 1, "user" => "bob", "id" => "12345");
 }
 
 /// Initializes the global reporter.
