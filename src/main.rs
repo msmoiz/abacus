@@ -3,14 +3,23 @@ use std::{collections::HashMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
+static mut REPORTER: Reporter = Reporter::new();
+
 fn main() {
-    for _ in 0..6 {
+    let _guard = init_reporter();
+
+    for _ in 0..8 {
         metric(
             "requests",
             1,
             HashMap::from([("user".into(), "bob".into())]),
         );
     }
+}
+
+/// Initializes the global reporter.
+fn init_reporter() -> ReporterGuard {
+    ReporterGuard
 }
 
 /// An interface for reporting metrics.
@@ -51,6 +60,18 @@ impl Reporter {
     }
 }
 
+/// An RAII guard for the global reporter.
+///
+/// Flushes the reporter when dropped. This is useful for reporting metrics that
+/// have been buffered but not flushed on program end or during a panic.
+struct ReporterGuard;
+
+impl Drop for ReporterGuard {
+    fn drop(&mut self) {
+        unsafe { REPORTER.flush() }
+    }
+}
+
 /// A quantitative measurement.
 struct Metric {
     /// The name of the metric.
@@ -88,8 +109,6 @@ impl Display for Metric {
 }
 
 fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
-    static mut REPORTER: Reporter = Reporter::new();
-
     let time = {
         let dt = SystemTime::now();
         let dt: DateTime<Utc> = dt.into();
