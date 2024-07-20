@@ -1,9 +1,13 @@
+use std::cell::OnceCell;
 use std::fmt::Display;
+use std::sync::mpsc::{channel, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use std::{collections::HashMap, time::SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-static mut REPORTER: Reporter = Reporter::new();
+static mut REPORTER: OnceCell<Reporter> = OnceCell::new();
 
 fn main() {
     let _guard = init_reporter();
@@ -15,48 +19,97 @@ fn main() {
             HashMap::from([("user".into(), "bob".into())]),
         );
     }
+
+    thread::sleep(Duration::from_secs(5));
 }
 
 /// Initializes the global reporter.
+///
+/// Returns a guard that will flush the reporter when dropped.
 fn init_reporter() -> ReporterGuard {
+    unsafe {
+        REPORTER
+            .set(Reporter::new())
+            .expect("reporter should only be set once");
+    }
+
     ReporterGuard
 }
 
 /// An interface for reporting metrics.
+#[derive(Debug)]
 struct Reporter {
-    /// Buffered metrics.
-    buf: Vec<Metric>,
-    /// The current position in the buffer. Metrics buffered after this position
-    /// have not been reported yet.
-    pos: usize,
+    /// Handle for the reporting thread.
+    handle: Option<JoinHandle<()>>,
+    /// Interface to send metrics to the reporting thread.
+    sender: Sender<Message>,
 }
 
 impl Reporter {
     /// Creates a new Reporter.
-    const fn new() -> Self {
+    fn new() -> Self {
+        let (handle, sender) = Self::report();
         Self {
-            buf: vec![],
-            pos: 0,
+            handle: Some(handle),
+            sender,
         }
     }
 
     /// Records a metric.
     fn record(&mut self, metric: Metric) {
         println!("record: {metric}");
-        self.buf.push(metric);
-
-        const FLUSH_THRESHOLD: usize = 3;
-        if self.buf.len() - self.pos == FLUSH_THRESHOLD {
-            self.flush();
-        }
+        self.sender.send(Message::Metric(metric)).unwrap();
     }
 
-    /// Flushes buffered metrics.
-    fn flush(&mut self) {
-        for metric in &self.buf[self.pos..] {
-            println!("report: {metric}");
-        }
-        self.pos = self.buf.len();
+    /// Reports metrics in the background.
+    ///
+    /// Starts a separate thread that reports metrics. Metrics can be passed to
+    /// the thread using the channel handle returned.
+    fn report() -> (JoinHandle<()>, Sender<Message>) {
+        let (sender, receiver) = channel();
+        let user_sender = sender.clone();
+        let timer_sender = sender.clone();
+
+        let handle = thread::spawn(move || {
+            let mut buf = vec![];
+            let mut pos = 0;
+
+            loop {
+                let Ok(message) = receiver.recv() else { break };
+
+                match message {
+                    Message::Metric(metric) => buf.push(metric),
+                    Message::Flush => {
+                        println!("flushing metrics ({}..{})", pos, buf.len() - 1);
+                        pos = buf.len();
+                    }
+                    Message::Close => break,
+                }
+
+                const FLUSH_THRESHOLD: usize = 3;
+                if buf.len() - pos == FLUSH_THRESHOLD {
+                    println!("flushing metrics ({}..{})", pos, buf.len() - 1);
+                    pos = buf.len();
+                }
+            }
+
+            if pos < buf.len() {
+                println!("flushing metrics ({}..{})", pos, buf.len() - 1);
+            }
+        });
+
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(3));
+            timer_sender.send(Message::Flush).unwrap();
+        });
+
+        (handle, user_sender)
+    }
+
+    /// Closes the reporting thread.
+    fn close(&mut self) {
+        self.sender.send(Message::Close).unwrap();
+        self.handle.take().map(|t| t.join());
     }
 }
 
@@ -68,7 +121,9 @@ struct ReporterGuard;
 
 impl Drop for ReporterGuard {
     fn drop(&mut self) {
-        unsafe { REPORTER.flush() }
+        unsafe {
+            REPORTER.get_mut().map(|r| r.close());
+        }
     }
 }
 
@@ -108,6 +163,16 @@ impl Display for Metric {
     }
 }
 
+/// Message to send to the reporting thread.
+enum Message {
+    /// Report a metric.
+    Metric(Metric),
+    /// Flush metrics.
+    Flush,
+    /// Close the thread.
+    Close,
+}
+
 fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
     let time = {
         let dt = SystemTime::now();
@@ -123,6 +188,6 @@ fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
     };
 
     unsafe {
-        REPORTER.record(metric);
+        REPORTER.get_mut().as_deref_mut().map(|r| r.record(metric));
     }
 }
