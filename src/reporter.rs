@@ -49,7 +49,7 @@ where
 }
 
 /// Reports a metric using the global reporter.
-pub(crate) fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
+pub fn metric(name: &str, value: u64, dimensions: HashMap<String, String>) {
     let time = {
         let dt = SystemTime::now();
         let dt: DateTime<Utc> = dt.into();

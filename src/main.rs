@@ -1,15 +1,13 @@
-mod buf_reporter;
-mod metric;
-mod reporter;
-
+use metrics::reporter;
 use std::thread::{self};
 use std::time::Duration;
 
-use buf_reporter::BufReporter;
-use reporter::set_reporter;
+use metrics::metric;
+use metrics::reporter::set_reporter;
+use metrics::simple_reporter::SimpleReporter;
 
 fn main() {
-    let _guard = set_reporter(BufReporter::new());
+    let _guard = set_reporter(SimpleReporter::new());
 
     for _ in 0..8 {
         metric!("requests", 1, "user" => "alice");

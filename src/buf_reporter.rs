@@ -28,7 +28,7 @@ pub struct BufReporter {
 impl BufReporter {
     /// Creates a new Reporter.
     pub fn new() -> Self {
-        let (handle, sender) = Self::report();
+        let (handle, sender) = Self::start_reporting_thread();
         Self {
             handle: Some(handle),
             sender,
@@ -39,7 +39,7 @@ impl BufReporter {
     ///
     /// Starts a separate thread that reports metrics. Metrics can be passed to
     /// the thread using the channel handle returned.
-    fn report() -> (JoinHandle<()>, Sender<Message>) {
+    fn start_reporting_thread() -> (JoinHandle<()>, Sender<Message>) {
         let (sender, receiver) = channel();
         let user_sender = sender.clone();
         let timer_sender = sender.clone();
